@@ -1,0 +1,395 @@
+# Generates index.html in each content subfolder.
+# Image-pair folders get a comparison slider; video folders get a video player.
+
+$root = $PSScriptRoot
+
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+function Get-Title($folderName) {
+    # Strip leading "NN_" and replace underscores with spaces
+    $t = $folderName -replace '^\d+_', ''
+    $t = $t -replace '_', ' '
+    return $t.Trim()
+}
+
+function Encode-Src($filename) {
+    # Percent-encode characters that are not safe in URL paths
+    return [Uri]::EscapeUriString($filename) -replace '\+', '%2B'
+}
+
+# ── comparison slider HTML ────────────────────────────────────────────────────
+
+function Make-ComparisonHtml($title, $leftFile, $leftLabel, $rightFile, $rightLabel) {
+    $leftSrc  = Encode-Src $leftFile
+    $rightSrc = Encode-Src $rightFile
+    return @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$title</title>
+    <style>
+        :root {
+            --bg-color: #121212;
+            --surface-color: #1e1e1e;
+            --text-color: #e0e0e0;
+            --handle-color: #ffffff;
+            --line-color: rgba(255, 255, 255, 0.8);
+        }
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+        header {
+            padding: 0.8rem 2rem;
+            background-color: var(--surface-color);
+            display: flex;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.3);
+            z-index: 100;
+        }
+        h1 { font-size: 1.1rem; font-weight: 500; letter-spacing: 0.5px; opacity: 0.9; }
+        #viewer {
+            flex: 1;
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            cursor: grab;
+            background-image: radial-gradient(#2a2a2a 1px, transparent 1px);
+            background-size: 20px 20px;
+        }
+        #viewer.grabbing { cursor: grabbing; }
+        #transform-layer {
+            position: relative;
+            transform-origin: center;
+            box-shadow: 0 30px 60px rgba(0,0,0,0.5);
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.3s ease;
+        }
+        #transform-layer.visible { opacity: 1; pointer-events: auto; }
+        .comparison-container {
+            position: relative;
+            user-select: none;
+            min-width: 300px;
+            min-height: 200px;
+        }
+        .img-wrapper {
+            position: absolute;
+            top: 0; left: 0; height: 100%;
+            overflow: hidden;
+        }
+        .img-wrapper img {
+            height: 100%;
+            display: block;
+            pointer-events: none;
+            object-fit: cover;
+            max-width: none;
+        }
+        #left-wrapper {
+            width: 50%;
+            z-index: 10;
+            border-right: 1px solid var(--line-color);
+            will-change: width;
+            background: #111;
+        }
+        #right-wrapper { width: 100%; z-index: 1; background: #111; }
+        .handle {
+            position: absolute;
+            bottom: 10px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: 32px; height: 32px;
+            background: var(--handle-color);
+            border-radius: 50%;
+            z-index: 20;
+            cursor: col-resize;
+            box-shadow: 0 4px 10px rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .handle:hover  { transform: translateX(-50%) scale(1.1); }
+        .handle:active { transform: translateX(-50%) scale(0.95); }
+        .handle::after, .handle::before {
+            content: '';
+            border: solid #333;
+            border-width: 0 2px 2px 0;
+            display: inline-block;
+            padding: 2px;
+        }
+        .handle::before { transform: rotate(135deg); margin-right: 1px; }
+        .handle::after  { transform: rotate(-45deg);  margin-left: 1px; }
+        .label {
+            position: absolute;
+            top: 12px;
+            background: rgba(0,0,0,0.6);
+            backdrop-filter: blur(4px);
+            color: rgba(255,255,255,0.9);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 500;
+            pointer-events: none;
+            z-index: 15;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .label-right { right: 12px; }
+        .label-left  { left: 12px; }
+        .zoom-controls {
+            position: absolute;
+            bottom: 2rem;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(30,30,30,0.9);
+            backdrop-filter: blur(5px);
+            padding: 6px;
+            border-radius: 50px;
+            display: flex;
+            gap: 8px;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.4);
+            border: 1px solid rgba(255,255,255,0.05);
+            z-index: 50;
+        }
+        .icon-btn {
+            background: transparent;
+            border: none;
+            color: var(--text-color);
+            width: 32px; height: 32px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background 0.2s;
+        }
+        .icon-btn:hover { background: rgba(255,255,255,0.1); }
+        .icon-btn svg { width: 18px; height: 18px; fill: currentColor; }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>$title</h1>
+    </header>
+    <div id="viewer">
+        <div id="transform-layer">
+            <div class="comparison-container" id="comp-container">
+                <div class="img-wrapper" id="right-wrapper">
+                    <img id="img-right" src="$rightSrc">
+                    <div class="label label-right">$rightLabel</div>
+                </div>
+                <div class="img-wrapper" id="left-wrapper">
+                    <img id="img-left" src="$leftSrc">
+                    <div class="label label-left">$leftLabel</div>
+                </div>
+                <div class="handle" id="slider-handle"></div>
+            </div>
+        </div>
+    </div>
+    <div class="zoom-controls">
+        <button class="icon-btn" onclick="zoomOut()">
+            <svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <button class="icon-btn" onclick="resetView()">
+            <svg viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3 3v5h5" fill="none" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <button class="icon-btn" onclick="zoomIn()">
+            <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19" stroke="currentColor" stroke-width="2"/><line x1="5" y1="12" x2="19" y2="12" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+    </div>
+    <script>
+        const imgLeft        = document.getElementById('img-left');
+        const imgRight       = document.getElementById('img-right');
+        const transformLayer = document.getElementById('transform-layer');
+        const compContainer  = document.getElementById('comp-container');
+        const leftWrapper    = document.getElementById('left-wrapper');
+        const handle         = document.getElementById('slider-handle');
+        const viewer         = document.getElementById('viewer');
+
+        let scale = 1, pannedX = 0, pannedY = 0;
+        let isDraggingImg = false, isSliding = false;
+        let startX, startY, loadedCount = 0;
+
+        function onImageLoad() {
+            loadedCount++;
+            if (loadedCount >= 2) initViewer();
+        }
+
+        imgLeft.onload  = onImageLoad;
+        imgRight.onload = onImageLoad;
+        if (imgLeft.complete)  onImageLoad();
+        if (imgRight.complete) onImageLoad();
+
+        function initViewer() {
+            transformLayer.classList.add('visible');
+            requestAnimationFrame(calculateDimensions);
+        }
+
+        function calculateDimensions() {
+            if (!imgLeft.naturalWidth) { setTimeout(calculateDimensions, 50); return; }
+            const aspect = imgLeft.naturalWidth / imgLeft.naturalHeight;
+            const maxH   = window.innerHeight * 0.85;
+            const maxW   = window.innerWidth  * 0.90;
+            let h = Math.min(560, maxH);
+            let w = h * aspect;
+            if (w > maxW) { w = maxW; h = w / aspect; }
+            compContainer.style.width  = w + 'px';
+            compContainer.style.height = h + 'px';
+            imgLeft.style.width        = w + 'px';
+            imgRight.style.width       = w + 'px';
+            if (scale === 1 && pannedX === 0) resetView();
+        }
+
+        function updateSlider(clientX) {
+            const rect = compContainer.getBoundingClientRect();
+            const pct  = Math.max(0, Math.min((clientX - rect.left) / rect.width, 1)) * 100;
+            leftWrapper.style.width = pct + '%';
+            handle.style.left       = pct + '%';
+        }
+
+        handle.addEventListener('mousedown', () => isSliding = true);
+        handle.addEventListener('touchstart', (e) => { isSliding = true; e.stopPropagation(); });
+        window.addEventListener('mouseup',  () => { isSliding = false; isDraggingImg = false; viewer.classList.remove('grabbing'); });
+        window.addEventListener('touchend', () => isSliding = false);
+
+        window.addEventListener('mousemove', (e) => {
+            if (isSliding)     { e.preventDefault(); updateSlider(e.clientX); }
+            if (isDraggingImg) { e.preventDefault(); pannedX = e.clientX - startX; pannedY = e.clientY - startY; updateTransform(); }
+        });
+        window.addEventListener('touchmove', (e) => { if (isSliding) updateSlider(e.touches[0].clientX); });
+
+        compContainer.addEventListener('mousedown', (e) => {
+            if (e.target === handle) return;
+            updateSlider(e.clientX);
+            isSliding = true;
+        });
+
+        function updateTransform() {
+            transformLayer.style.transform = 'translate(' + pannedX + 'px,' + pannedY + 'px) scale(' + scale + ')';
+        }
+        function zoomIn()  { scale = Math.min(50,  scale * 1.2); updateTransform(); }
+        function zoomOut() { scale = Math.max(0.1, scale / 1.2); updateTransform(); }
+        function resetView() { scale = 1; pannedX = 0; pannedY = 0; updateTransform(); }
+
+        viewer.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const n = scale * (1 + e.deltaY * -0.001);
+            if (n > 0.1 && n < 50) { scale = n; updateTransform(); }
+        }, { passive: false });
+
+        viewer.addEventListener('mousedown', (e) => {
+            if (e.target === handle || isSliding) return;
+            isDraggingImg = true;
+            startX = e.clientX - pannedX;
+            startY = e.clientY - pannedY;
+            viewer.classList.add('grabbing');
+        });
+
+        window.addEventListener('resize', calculateDimensions);
+    </script>
+</body>
+</html>
+"@
+}
+
+# ── video player HTML ─────────────────────────────────────────────────────────
+
+function Make-VideoHtml($title, $videoFile) {
+    $src = Encode-Src $videoFile
+    return @"
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>$title</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            background: #000;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            overflow: hidden;
+        }
+        video {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body>
+    <video
+        src="$src"
+        autoplay
+        muted
+        loop
+        playsinline>
+    </video>
+</body>
+</html>
+"@
+}
+
+# ── scan and generate ─────────────────────────────────────────────────────────
+
+$imageExtensions = @('.png', '.jpg', '.jpeg', '.webp')
+$videoExtensions = @('.mp4', '.webm', '.mov')
+
+# Folders to skip
+$skipDirs = @('00_Template', '.git')
+
+Get-ChildItem -Path $root -Directory | Where-Object { $skipDirs -notcontains $_.Name } | ForEach-Object {
+    $topDir = $_
+    # Walk all leaf subdirectories (and the top dir itself if it has content)
+    $allDirs = @($topDir) + (Get-ChildItem -Path $topDir.FullName -Recurse -Directory |
+                              Where-Object { ($_.FullName -split '\\') -notcontains '.git' })
+
+    foreach ($dir in $allDirs) {
+        $files = Get-ChildItem -Path $dir.FullName -File |
+                 Where-Object { $_.Name -ne 'index.html' }
+
+        # ── check for image pair ──────────────────────────────────────────────
+        $origFiles = $files | Where-Object { $_.Name -match '_Original' -and $imageExtensions -contains $_.Extension.ToLower() }
+        $genFiles  = $files | Where-Object { $_.Name -match '_Generated|_Edited' -and $imageExtensions -contains $_.Extension.ToLower() }
+
+        if ($origFiles.Count -ge 1 -and $genFiles.Count -ge 1) {
+            $origFile = $origFiles[0]
+            $genFile  = $genFiles[0]
+            $genLabel = if ($genFile.Name -match '_Edited') { 'Edited' } else { 'Generated' }
+            $title    = Get-Title $dir.Name
+
+            $html = Make-ComparisonHtml $title $origFile.Name 'Original' $genFile.Name $genLabel
+            $outPath = Join-Path $dir.FullName 'index.html'
+            $html | Out-File -FilePath $outPath -Encoding utf8 -NoNewline
+            Write-Host "  [compare] $($dir.FullName -replace [regex]::Escape($root), '')\index.html"
+            continue
+        }
+
+        # ── check for video ───────────────────────────────────────────────────
+        $videoFiles = $files | Where-Object { $videoExtensions -contains $_.Extension.ToLower() }
+        if ($videoFiles.Count -ge 1) {
+            $videoFile = $videoFiles[0]
+            $title = Get-Title $dir.Name
+
+            $html = Make-VideoHtml $title $videoFile.Name
+            $outPath = Join-Path $dir.FullName 'index.html'
+            $html | Out-File -FilePath $outPath -Encoding utf8 -NoNewline
+            Write-Host "  [video]   $($dir.FullName -replace [regex]::Escape($root), '')\index.html"
+        }
+    }
+}
+
+Write-Host "`nDone."
