@@ -191,7 +191,7 @@
         const handle         = document.getElementById('slider-handle');
         const viewer         = document.getElementById('viewer');
 
-        let scale = 1.5, pannedX = 0, pannedY = 0;
+        let scale = 1.0, pannedX = 0, pannedY = 0;
         let isDraggingImg = false, isSliding = false;
         let startX, startY, loadedCount = 0;
 
@@ -222,7 +222,7 @@
             compContainer.style.height = h + 'px';
             imgLeft.style.width        = w + 'px';
             imgRight.style.width       = w + 'px';
-            if (scale === 1.5 && pannedX === 0) resetView();
+            if (scale === 1.0 && pannedX === 0) resetView();
         }
 
         function updateSlider(clientX) {
@@ -254,7 +254,7 @@
         }
         function zoomIn()  { scale = Math.min(50,  scale * 1.2); updateTransform(); }
         function zoomOut() { scale = Math.max(0.1, scale / 1.2); updateTransform(); }
-        function resetView() { scale = 1.5; pannedX = 0; pannedY = 0; updateTransform(); }
+        function resetView() { scale = 1.0; pannedX = 0; pannedY = 0; updateTransform(); }
 
         viewer.addEventListener('wheel', (e) => {
             e.preventDefault();
